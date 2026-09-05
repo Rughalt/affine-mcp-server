@@ -53,6 +53,23 @@ for (const profile of ["full", "core", "authoring"]) {
   }));
 }
 
+const oauthExperimentalWriteFilter = createToolFilter(
+  createToolFilterEnvironment("oauth", {
+    AFFINE_TOOL_PROFILE: "authoring",
+    AFFINE_ALLOWED_EXPERIMENTAL_TOOLS: "create_folder",
+  }),
+);
+assert(oauthExperimentalWriteFilter.isEnabled("create_folder"));
+assert(oauthExperimentalWriteFilter.enabledWriteTools.includes("create_folder"));
+assert.throws(
+  () => assertOAuthServiceWritePolicy({
+    authMode: "oauth",
+    allowServiceWrites: false,
+    enabledWriteTools: oauthExperimentalWriteFilter.enabledWriteTools,
+  }),
+  /AFFINE_OAUTH_ALLOW_SERVICE_WRITES=true/,
+);
+
 const explicitlyRestrictedFullFilter = createToolFilter(
   createToolFilterEnvironment("oauth", {
     AFFINE_TOOL_PROFILE: "full",

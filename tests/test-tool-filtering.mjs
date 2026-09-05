@@ -324,6 +324,43 @@ async function run() {
       hasFailures = true;
     }
 
+    // 8a. Authoring can opt into exact experimental tools without widening other restrictions.
+    console.log("\nCase 8a: Authoring allows selected experimental tools");
+    const tools8a = await testFiltering({
+      AFFINE_TOOL_PROFILE: "authoring",
+      AFFINE_ALLOWED_EXPERIMENTAL_TOOLS: " create_folder, move_organize_node ",
+    });
+    const selectedExperimentalVisible =
+      tools8a.includes("create_folder") && tools8a.includes("move_organize_node");
+    const unselectedExperimentalHidden =
+      !tools8a.includes("add_organize_link") && !tools8a.includes("create_workspace_blueprint");
+    const restrictedStillHidden =
+      !tools8a.includes("delete_folder") && !tools8a.includes("update_profile");
+    const disabledExperimental = await testFiltering({
+      AFFINE_TOOL_PROFILE: "authoring",
+      AFFINE_ALLOWED_EXPERIMENTAL_TOOLS: "create_folder",
+      AFFINE_DISABLED_GROUPS: "experimental",
+    });
+    const disabledRuleWins = !disabledExperimental.includes("create_folder");
+    const readOnlyDoesNotWiden = !(await testFiltering({
+      AFFINE_TOOL_PROFILE: "read_only",
+      AFFINE_ALLOWED_EXPERIMENTAL_TOOLS: "create_folder",
+    })).includes("create_folder");
+    if (
+      selectedExperimentalVisible
+      && unselectedExperimentalHidden
+      && restrictedStillHidden
+      && disabledRuleWins
+      && readOnlyDoesNotWiden
+    ) {
+      console.log("✅ Success: Experimental allowlist is exact and cannot bypass other restrictions.");
+    } else {
+      console.error(
+        "❌ Failed: Experimental allowlist widened the tool surface beyond selected authoring tools.",
+      );
+      hasFailures = true;
+    }
+
     // 9. Unknown tools fail closed for every profile, including full.
     console.log("\nCase 9: Unknown tool registration fails closed for every surface");
     const policy = await inspectToolSurfacePolicy();
@@ -346,12 +383,15 @@ async function run() {
         AFFINE_TOOL_PROFILE: "read-ony",
         AFFINE_DISABLED_GROUPS: "unknown.group",
         AFFINE_DISABLED_TOOLS: "future_tool",
+        AFFINE_ALLOWED_EXPERIMENTAL_TOOLS: "future_experimental,create_doc",
       },
       [
         "Invalid tool surface configuration",
         "Unknown AFFINE_TOOL_PROFILE",
         'Unknown group "unknown.group"',
         'Unknown tool "future_tool"',
+        'Unknown tool "future_experimental" in AFFINE_ALLOWED_EXPERIMENTAL_TOOLS',
+        'Tool "create_doc" in AFFINE_ALLOWED_EXPERIMENTAL_TOOLS is not experimental',
       ],
     );
     if (invalidConfig.ok) {

@@ -87,6 +87,7 @@ and response limit above.
 | Variable | Purpose |
 | --- | --- |
 | `AFFINE_TOOL_PROFILE` | Environment-only predefined tool surface profile (`full`, `read_only`, `core`, `authoring`) |
+| `AFFINE_ALLOWED_EXPERIMENTAL_TOOLS` | Environment-only comma-separated allowlist of experimental tools for the `authoring` profile |
 | `AFFINE_DISABLED_GROUPS` | Environment-only comma-separated tool groups to disable |
 | `AFFINE_DISABLED_TOOLS` | Environment-only exact canonical tool names to disable |
 
@@ -315,6 +316,19 @@ Available profiles:
 - `authoring`: expose every `read_only` tool plus non-destructive creation and editing tools, including semantic pages, native templates, database composition, and edgeless canvas authoring; omits admin, cleanup, destructive, and experimental organize write tools
 
 Profile, group, and tool names are validated at startup. An unknown value stops the server instead of falling back to a broader tool surface. This prevents a configuration typo from silently enabling tools that an operator intended to hide.
+
+To enable only selected experimental tools in `authoring`, list their exact
+canonical names:
+
+```env
+AFFINE_TOOL_PROFILE=authoring
+AFFINE_ALLOWED_EXPERIMENTAL_TOOLS=create_folder,move_organize_node
+```
+
+This allowlist removes only the `experimental` restriction. It cannot bypass
+`read_only` or `core` profile limits, another `AFFINE_DISABLED_*` rule, or the
+OAuth requirement for `AFFINE_OAUTH_ALLOW_SERVICE_WRITES=true`. Unknown and
+non-experimental tool names stop startup instead of being ignored.
 
 ### Disable whole groups
 

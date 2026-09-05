@@ -193,6 +193,10 @@ async function buildServer() {
     };
   }
   console.error(`[affine-mcp] Tool profile: ${toolFilter.profile}`);
+  console.error(
+    `[affine-mcp] Allowed experimental tools: ` +
+    `${toolFilterEnvironment.AFFINE_ALLOWED_EXPERIMENTAL_TOOLS || "(none)"}`,
+  );
   console.error(`[affine-mcp] Disabled groups: ${toolFilterEnvironment.AFFINE_DISABLED_GROUPS || "(none)"}`);
   console.error(`[affine-mcp] Disabled tools: ${toolFilterEnvironment.AFFINE_DISABLED_TOOLS || "(none)"}`);
   console.error(`[affine-mcp] Enabled tools: ${toolFilter.enabledTools.length}/${toolFilter.totalToolCount}`);

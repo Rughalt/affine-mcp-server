@@ -331,7 +331,11 @@ function normalizeProfile(raw: string | undefined): ToolProfile | null {
   return null;
 }
 
-function profileAllowsTool(profile: ToolProfile, toolName: ToolName): boolean {
+function profileAllowsTool(
+  profile: ToolProfile,
+  toolName: ToolName,
+  allowedExperimentalTools: ReadonlySet<string>,
+): boolean {
   if (profile === "full") {
     return true;
   }
@@ -345,13 +349,17 @@ function profileAllowsTool(profile: ToolProfile, toolName: ToolName): boolean {
     return true;
   }
   const groups = TOOL_GROUPS[toolName];
-  return !groups.some(group => AUTHORING_EXCLUDED_GROUPS.has(group));
+  return !groups.some(group =>
+    AUTHORING_EXCLUDED_GROUPS.has(group)
+    && (group !== "experimental" || !allowedExperimentalTools.has(toolName))
+  );
 }
 
 export function createToolFilter(env: NodeJS.ProcessEnv = process.env) {
   const profile = normalizeProfile(env.AFFINE_TOOL_PROFILE);
   const disabledGroups = new Set(parseCsv(env.AFFINE_DISABLED_GROUPS));
   const disabledTools = new Set(parseCsv(env.AFFINE_DISABLED_TOOLS));
+  const allowedExperimentalTools = new Set(parseCsv(env.AFFINE_ALLOWED_EXPERIMENTAL_TOOLS));
   const issues: string[] = [];
 
   if (!profile) {
@@ -375,6 +383,16 @@ export function createToolFilter(env: NodeJS.ProcessEnv = process.env) {
     }
   }
 
+  for (const tool of allowedExperimentalTools) {
+    if (!KNOWN_TOOLS.has(tool)) {
+      issues.push(`Unknown tool "${tool}" in AFFINE_ALLOWED_EXPERIMENTAL_TOOLS.`);
+    } else if (!TOOL_GROUPS[tool as ToolName].includes("experimental")) {
+      issues.push(
+        `Tool "${tool}" in AFFINE_ALLOWED_EXPERIMENTAL_TOOLS is not experimental.`,
+      );
+    }
+  }
+
   if (issues.length > 0) {
     throw new ToolSurfaceConfigError(issues);
   }
@@ -393,7 +411,7 @@ export function createToolFilter(env: NodeJS.ProcessEnv = process.env) {
     if (groups.some(group => disabledGroups.has(group))) {
       return false;
     }
-    return profileAllowsTool(validatedProfile, toolName);
+    return profileAllowsTool(validatedProfile, toolName, allowedExperimentalTools);
   }
 
   const enabledTools = ALL_TOOLS.filter(toolName => isEnabled(toolName));
@@ -405,6 +423,7 @@ export function createToolFilter(env: NodeJS.ProcessEnv = process.env) {
     profile: validatedProfile,
     disabledGroups,
     disabledTools,
+    allowedExperimentalTools,
     enabledTools,
     enabledWriteTools,
     totalToolCount: ALL_TOOLS.length,
