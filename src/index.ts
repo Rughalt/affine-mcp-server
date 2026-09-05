@@ -22,6 +22,8 @@ import { existsSync } from "fs";
 import { createToolFilter, toolAnnotationsFor } from "./toolSurface.js";
 import { toolOutputSchemaFor } from "./toolOutputSchemas.js";
 import { stripSchemaDialect } from "./util/mcp.js";
+import { wrapToolHandler } from "./toolExecution.js";
+import { loadWsRuntimeConfig } from "./wsRuntimeConfig.js";
 import {
   assertOAuthServiceWritePolicy,
   createToolFilterEnvironment,
@@ -141,6 +143,12 @@ if (authSource === "not configured") {
   console.error("[affine-mcp] Set AFFINE_EMAIL and AFFINE_PASSWORD, AFFINE_COOKIE, or run: affine-mcp login");
 }
 console.error(`[affine-mcp] HTTP auth mode: ${config.authMode}`);
+const wsRuntimeConfig = loadWsRuntimeConfig();
+console.error(
+  `[affine-mcp] WebSocket limits: active=${wsRuntimeConfig.maxConcurrent}, ` +
+  `queue=${wsRuntimeConfig.maxQueue}, queueTimeout=${wsRuntimeConfig.queueTimeoutMs}ms, ` +
+  `connectTimeout=${wsRuntimeConfig.connectTimeoutMs}ms, ackTimeout=${wsRuntimeConfig.ackTimeoutMs}ms`,
+);
 
 console.error(`[affine-mcp] Workspace: ${config.defaultWorkspaceId ? 'set' : '(none)'}`);
 
@@ -182,14 +190,15 @@ async function buildServer() {
     (server as any).registerTool = (name: string, options: any, handler: any) => {
       if (!toolFilter.isEnabled(name)) return;
       const outputSchema = options?.outputSchema ?? toolOutputSchemaFor(name);
+      const annotations = {
+        ...toolAnnotationsFor(name),
+        ...(options?.annotations || {}),
+      };
       return originalRegisterTool(name, {
         ...options,
         ...(outputSchema ? { outputSchema } : {}),
-        annotations: {
-          ...toolAnnotationsFor(name),
-          ...(options?.annotations || {}),
-        },
-      }, handler);
+        annotations,
+      }, wrapToolHandler(name, annotations.readOnlyHint === true, handler));
     };
   }
   console.error(`[affine-mcp] Tool profile: ${toolFilter.profile}`);

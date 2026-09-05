@@ -23,6 +23,7 @@ import {
 } from "./oauth.js";
 import { parseBooleanFlag } from "./networkSecurity.js";
 import { fetchResponseBody } from "./util/httpResponse.js";
+import { loadWsRuntimeConfig } from "./wsRuntimeConfig.js";
 
 const CLI_FETCH_TIMEOUT_MS = 30_000;
 
@@ -215,6 +216,7 @@ function getEffectiveAuthValueSource(
 
 function buildEffectiveConfigSummary(effective: ServerConfig = loadConfig()) {
   const stored = loadConfigFile();
+  const ws = loadWsRuntimeConfig();
   const authKind = effective.apiToken
     ? "api-token"
     : effective.cookie
@@ -254,6 +256,7 @@ function buildEffectiveConfigSummary(effective: ServerConfig = loadConfig()) {
     oauthClockSkewSeconds: effective.oauthClockSkewSeconds,
     transportMode: effective.transportMode,
     loginAtStart: effective.loginAtStart,
+    ws,
     http: {
       host: effective.http.host,
       port: effective.http.port,
@@ -284,6 +287,11 @@ function buildEffectiveConfigSummary(effective: ServerConfig = loadConfig()) {
       httpAuthToken: getConfigValueSource("AFFINE_MCP_HTTP_TOKEN", stored),
       httpAllowedOrigins: getConfigValueSource("AFFINE_MCP_HTTP_ALLOWED_ORIGINS", stored),
       httpAllowAllOrigins: getConfigValueSource("AFFINE_MCP_HTTP_ALLOW_ALL_ORIGINS", stored, "false"),
+      wsMaxConcurrent: process.env.AFFINE_WS_MAX_CONCURRENT ? "env" : "default",
+      wsMaxQueue: process.env.AFFINE_WS_MAX_QUEUE ? "env" : "default",
+      wsQueueTimeoutMs: process.env.AFFINE_WS_QUEUE_TIMEOUT_MS ? "env" : "default",
+      wsConnectTimeoutMs: process.env.AFFINE_WS_CONNECT_TIMEOUT_MS ? "env" : "default",
+      wsAckTimeoutMs: process.env.AFFINE_WS_ACK_TIMEOUT_MS ? "env" : "default",
     },
   };
 }
@@ -781,6 +789,16 @@ function showConfig(args: string[]) {
   }
   console.log(`Transport: ${summary.transportMode} (${summary.sources.transportMode})`);
   console.log(`Login at start: ${summary.loginAtStart} (${summary.sources.loginAtStart})`);
+  console.log(
+    `WebSocket capacity: ${summary.ws.maxConcurrent} active / ${summary.ws.maxQueue} queued ` +
+    `(${summary.sources.wsMaxConcurrent}/${summary.sources.wsMaxQueue})`,
+  );
+  console.log(
+    `WebSocket timeouts: queue=${summary.ws.queueTimeoutMs}ms, ` +
+    `connect=${summary.ws.connectTimeoutMs}ms, ack=${summary.ws.ackTimeoutMs}ms ` +
+    `(${summary.sources.wsQueueTimeoutMs}/${summary.sources.wsConnectTimeoutMs}/` +
+    `${summary.sources.wsAckTimeoutMs})`,
+  );
   console.log(`HTTP bind: ${summary.http.host}:${summary.http.port} (${summary.sources.httpHost}/${summary.sources.httpPort})`);
   console.log(`HTTP auth token: ${summary.http.authToken || "(unset)"} (${summary.sources.httpAuthToken})`);
   console.log(
@@ -874,6 +892,14 @@ async function doctor(args: string[]) {
           : "Non-loopback bearer deployments require AFFINE_MCP_HTTP_TOKEN",
     });
   }
+
+  checks.push({
+    name: "websocket-capacity",
+    ok: true,
+    detail:
+      `${summary.ws.maxConcurrent} active, ${summary.ws.maxQueue} queued, ` +
+      `${summary.ws.queueTimeoutMs}ms queue timeout`,
+  });
 
   if (summary.authMode === "oauth") {
     checks.push({

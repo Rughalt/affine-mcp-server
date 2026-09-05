@@ -196,6 +196,9 @@ try {
     PORT: "4321",
     AFFINE_MCP_HTTP_TOKEN: "http-secret-token",
     AFFINE_MCP_HTTP_ALLOWED_ORIGINS: "https://client.example.test",
+    AFFINE_WS_MAX_CONCURRENT: "17",
+    AFFINE_WS_MAX_QUEUE: "23",
+    AFFINE_WS_QUEUE_TIMEOUT_MS: "2400",
   });
 
   const showConfig = await runNode([DIST_ENTRY, "show-config", "--json"], effectiveEnv);
@@ -207,6 +210,10 @@ try {
   expect(summary.http.authToken !== "http-secret-token", "show-config exposed the HTTP auth token");
   expect(summary.sources.graphqlPath === "env", "GraphQL path source should be env");
   expect(summary.apiToken !== "env-token", "show-config exposed the API token");
+  expect(summary.ws.maxConcurrent === 17, "show-config omitted WebSocket concurrency");
+  expect(summary.ws.maxQueue === 23, "show-config omitted WebSocket queue capacity");
+  expect(summary.ws.queueTimeoutMs === 2400, "show-config omitted WebSocket queue timeout");
+  expect(summary.sources.wsMaxConcurrent === "env", "WebSocket concurrency source should be env");
 
   const staleSavedAuthHome = path.join(TEMP_ROOT, "stale-saved-auth");
   writeConfig(staleSavedAuthHome, {

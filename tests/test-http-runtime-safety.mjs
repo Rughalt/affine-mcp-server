@@ -198,21 +198,6 @@ async function initializeSession(baseUrl, id) {
   return sessionId;
 }
 
-async function waitForSessionCapacity(baseUrl, id, timeoutMs = 6_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const response = await postMcp(baseUrl, initializeBody(id));
-    if (response.status === 200) {
-      await response.body?.cancel();
-      return;
-    }
-    assertEqual(response.status, 503, "session capacity polling status");
-    await response.body?.cancel();
-    await delay(100);
-  }
-  throw new Error(`Timed out waiting ${timeoutMs}ms for session capacity`);
-}
-
 async function testRuntimeConfig() {
   assertEqual(parseBodyLimit(undefined), 4 * 1024 * 1024, "default body limit");
   assertEqual(parseBodyLimit("1kb"), 1024, "kilobyte body limit");
@@ -317,19 +302,15 @@ async function testUnknownSessionReturnsNotFound() {
   }
 }
 
-async function testSessionCapacityActivityAndIdleCleanup() {
+async function testSessionCapacityReclaimsOldestInactiveSession() {
   const server = await startHealthyServer({
-    AFFINE_MCP_HTTP_MAX_SESSIONS: "1",
+    AFFINE_MCP_HTTP_MAX_SESSIONS: "2",
     AFFINE_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS: "4000",
   });
   try {
     const firstSessionId = await initializeSession(server.baseUrl, 1);
+    const secondSessionId = await initializeSession(server.baseUrl, 2);
 
-    const full = await postMcp(server.baseUrl, initializeBody(2));
-    assertEqual(full.status, 503, "session capacity status");
-    assertEqual((await readJson(full)).error?.code, -32002, "session capacity error code");
-
-    await delay(2200);
     const activity = await postMcp(
       server.baseUrl,
       { jsonrpc: "2.0", method: "notifications/initialized" },
@@ -338,13 +319,22 @@ async function testSessionCapacityActivityAndIdleCleanup() {
     assert([200, 202, 204].includes(activity.status), `session activity status: ${activity.status}`);
     await activity.body?.cancel();
 
-    await delay(2200);
-    const stillFull = await postMcp(server.baseUrl, initializeBody(3));
-    assertEqual(stillFull.status, 503, "session activity refreshes idle deadline");
-    await stillFull.body?.cancel();
+    const replacement = await postMcp(server.baseUrl, initializeBody(3));
+    assertEqual(replacement.status, 200, "new session should reclaim inactive capacity");
+    await replacement.body?.cancel();
 
-    await waitForSessionCapacity(server.baseUrl, 4);
-    assert(server.logs().stderr.includes("idle timeout"), "idle cleanup should be logged");
+    const evicted = await postMcp(
+      server.baseUrl,
+      { jsonrpc: "2.0", id: 4, method: "tools/list", params: {} },
+      secondSessionId,
+    );
+    assertEqual(evicted.status, 404, "oldest inactive session should be evicted");
+    const evictedBody = await readJson(evicted);
+    assertEqual(evictedBody.error?.data?.restartSession, true, "evicted client should restart its session");
+    assert(
+      server.logs().stderr.includes("capacity reclaimed for a new session"),
+      "capacity reclamation should be logged",
+    );
   } finally {
     await server.close();
   }
@@ -396,7 +386,9 @@ async function testForcedConnectionDeadline() {
 
 async function testInitializeRequestSurvivesIdleSweep() {
   const previousIdleTimeout = process.env.AFFINE_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS;
+  const previousMaxSessions = process.env.AFFINE_MCP_HTTP_MAX_SESSIONS;
   process.env.AFFINE_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS = "100";
+  process.env.AFFINE_MCP_HTTP_MAX_SESSIONS = "1";
   let releaseRequest;
   const requestGate = new Promise((resolve) => {
     releaseRequest = resolve;
@@ -442,11 +434,19 @@ async function testInitializeRequestSurvivesIdleSweep() {
     await response.body?.cancel();
     await delay(150);
     assertEqual(handle.sessionCount(), 1, "initialize request remains active during idle sweep");
+    const busy = await postMcp(`http://127.0.0.1:${handle.port}`, initializeBody(21));
+    assertEqual(busy.status, 503, "active session must not be reclaimed");
+    const busyBody = await readJson(busy);
+    assertEqual(busyBody.error?.code, -32002, "active-capacity error code");
+    assertEqual(busyBody.error?.data?.type, "server_capacity_exceeded", "capacity error type");
+    assertEqual(busyBody.error?.data?.retryable, true, "capacity error retryability");
   } finally {
     releaseRequest?.();
     await handle?.close("Idle sweep test shutdown");
     if (previousIdleTimeout === undefined) delete process.env.AFFINE_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS;
     else process.env.AFFINE_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS = previousIdleTimeout;
+    if (previousMaxSessions === undefined) delete process.env.AFFINE_MCP_HTTP_MAX_SESSIONS;
+    else process.env.AFFINE_MCP_HTTP_MAX_SESSIONS = previousMaxSessions;
   }
 }
 
@@ -491,7 +491,7 @@ async function main() {
   await testStartupErrors();
   await testBodyLimitErrors();
   await testUnknownSessionReturnsNotFound();
-  await testSessionCapacityActivityAndIdleCleanup();
+  await testSessionCapacityReclaimsOldestInactiveSession();
   await testShutdownWithActiveSession();
   await testForcedConnectionDeadline();
   await testInitializeRequestSurvivesIdleSweep();

@@ -123,6 +123,13 @@ and response limit above.
 | `AFFINE_WS_CLIENT_VERSION` | No | `AFFINE_CLIENT_VERSION` (else `0.26.0`) | Environment-only AFFiNE client version sent during workspace socket connection; falls back to `AFFINE_CLIENT_VERSION` when unset |
 | `AFFINE_WS_CONNECT_TIMEOUT_MS` | No | `10000` | Environment-only milliseconds to wait for a workspace socket connection |
 | `AFFINE_WS_ACK_TIMEOUT_MS` | No | `10000` | Environment-only milliseconds to wait for a workspace socket acknowledgement |
+| `AFFINE_WS_MAX_CONCURRENT` | No | `32` | Maximum number of simultaneous AFFiNE workspace sockets across all MCP sessions |
+| `AFFINE_WS_MAX_QUEUE` | No | `64` | Maximum number of workspace socket requests waiting for capacity; `0` disables queuing |
+| `AFFINE_WS_QUEUE_TIMEOUT_MS` | No | `5000` | Maximum time a socket request waits in the FIFO capacity queue |
+
+When socket capacity is exhausted, read-only tools wait briefly and retry once. If the queue is full or its timeout expires, the tool returns a machine-readable, retryable `upstream_busy` error with current capacity values. Write tools are never retried automatically because their outcome may be unknown after a timeout or disconnect.
+
+Operational tool failures are returned as MCP tool errors (`isError: true`) with a safe detail, stable type, operation, retryability, and request ID. Raw errors and stacks stay in server logs. The request ID can be used to correlate a client-visible failure with the corresponding log entry.
 
 ## Auth strategy matrix
 
@@ -180,10 +187,13 @@ HTTP mode exposes:
 
 The HTTP transport limits JSON request bodies and the number of active sessions
 to prevent accidental resource exhaustion. Both Streamable HTTP and legacy SSE
-sessions count toward `AFFINE_MCP_HTTP_MAX_SESSIONS`. New sessions receive a
-`503` response with `Retry-After` when the limit is reached. Existing session
-traffic refreshes its idle deadline, and inactive sessions are closed after
-`AFFINE_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS`.
+sessions count toward `AFFINE_MCP_HTTP_MAX_SESSIONS`. At the limit, a new
+session replaces the oldest session that has no request in flight. If every
+session is actively handling work, initialization receives a machine-readable
+`503` response with `Retry-After`. A replaced client receives
+`restartSession: true` if it later tries to reuse its stale session ID. Existing
+session traffic refreshes its idle deadline, and inactive sessions are closed
+after `AFFINE_MCP_HTTP_SESSION_IDLE_TIMEOUT_MS`.
 
 On `SIGINT` or `SIGTERM`, the server stops accepting connections and closes MCP
 transports concurrently. If a connection prevents graceful shutdown beyond

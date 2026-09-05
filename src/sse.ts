@@ -19,6 +19,7 @@ import {
   loadHttpRuntimeConfig,
   type HttpRuntimeConfig,
 } from "./httpRuntimeConfig.js";
+import { classifyToolError } from "./toolExecution.js";
 
 type HttpTransport = StreamableHTTPServerTransport | SSEServerTransport;
 
@@ -46,11 +47,13 @@ function sendJsonRpcError(
   status: number,
   code: number,
   message: string,
+  data?: Record<string, unknown>,
+  id: string | number | null = null,
 ) {
   res.status(status).json({
     jsonrpc: "2.0",
-    error: { code, message },
-    id: null,
+    error: { code, message, ...(data ? { data } : {}) },
+    id,
   });
 }
 
@@ -248,20 +251,56 @@ export async function startHttpMcpServer(
   const hasSessionCapacity = () =>
     sessions.size + pendingSessionCount < runtimeConfig.maxSessions;
 
-  const rejectUnavailable = (res: Response, message: string) => {
+  const capacityData = (requestId: string) => ({
+    type: "server_capacity_exceeded",
+    operation: "mcp.session.initialize",
+    requestId,
+    retryable: true,
+    retryAfterMs: 1_000,
+    capacity: {
+      resource: "http_mcp_sessions",
+      active: sessions.size,
+      limit: runtimeConfig.maxSessions,
+      pending: pendingSessionCount,
+    },
+  });
+
+  const rejectUnavailable = (res: Response, message: string, data?: Record<string, unknown>) => {
     res.set("Retry-After", "1");
-    sendJsonRpcError(res, 503, -32002, message);
+    sendJsonRpcError(res, 503, -32002, message, data);
   };
 
-  const reserveSessionSlot = (): (() => void) | null => {
-    if (!hasSessionCapacity()) return null;
+  const closeTrackedTransport = async (
+    sessionId: string,
+    session: TrackedSession,
+    reason: string,
+  ) => {
+    console.error(`[affine-mcp] Closing ${session.kind} session ${sessionId}: ${reason}`);
+    try {
+      await session.transport.close();
+    } catch (error) {
+      console.error(`[affine-mcp] Failed to close session ${sessionId}:`, error);
+    }
+  };
+
+  const reserveSessionSlot = (): { release: () => void; eviction?: Promise<void> } | null => {
+    let eviction: Promise<void> | undefined;
+    if (!hasSessionCapacity()) {
+      const victim = [...sessions.entries()]
+        .filter(([, session]) => session.activeRequests === 0)
+        .sort(([, left], [, right]) => left.lastActivityAt - right.lastActivityAt)[0];
+      if (!victim) return null;
+      const [sessionId, session] = victim;
+      sessions.delete(sessionId);
+      eviction = closeTrackedTransport(sessionId, session, "capacity reclaimed for a new session");
+    }
     pendingSessionCount += 1;
     let released = false;
-    return () => {
+    return { eviction, release: () => {
       if (released) return;
       released = true;
       pendingSessionCount = Math.max(0, pendingSessionCount - 1);
-    };
+    } };
   };
 
   const registerSession = (
@@ -303,12 +342,7 @@ export async function startHttpMcpServer(
     const session = sessions.get(sessionId);
     if (!session) return;
     sessions.delete(sessionId);
-    console.error(`[affine-mcp] Closing ${session.kind} session ${sessionId}: ${reason}`);
-    try {
-      await session.transport.close();
-    } catch (error) {
-      console.error(`[affine-mcp] Failed to close session ${sessionId}:`, error);
-    }
+    await closeTrackedTransport(sessionId, session, reason);
   };
 
   const sweepIdleSessions = async () => {
@@ -328,6 +362,7 @@ export async function startHttpMcpServer(
   // ===========================================================================
   app.all("/mcp", corsMiddleware, authMiddleware, async (req, res) => {
     console.error(`[affine-mcp] Received ${req.method} request to /mcp`);
+    const requestId = randomUUID();
     let newTransport: StreamableHTTPServerTransport | undefined;
     let releaseReservation: (() => void) | undefined;
     let initializedSessionId: string | undefined;
@@ -357,11 +392,17 @@ export async function startHttpMcpServer(
           return;
         }
 
-        releaseReservation = reserveSessionSlot() || undefined;
-        if (!releaseReservation) {
-          rejectUnavailable(res, "Server busy: maximum HTTP MCP session capacity reached");
+        const reservation = reserveSessionSlot();
+        if (!reservation) {
+          rejectUnavailable(
+            res,
+            "Server busy: all HTTP MCP sessions have active requests",
+            capacityData(requestId),
+          );
           return;
         }
+        releaseReservation = reservation.release;
+        void reservation.eviction;
 
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -388,7 +429,13 @@ export async function startHttpMcpServer(
         const mcpServer = await createMcpServer();
         await mcpServer.connect(transport);
       } else if (sessionId && !existing) {
-        sendJsonRpcError(res, 404, -32001, "Session not found");
+        sendJsonRpcError(res, 404, -32001, "Session not found", {
+          type: "session_not_found",
+          operation: "mcp.session.resume",
+          requestId,
+          retryable: true,
+          restartSession: true,
+        });
         return;
       } else {
         sendJsonRpcError(
@@ -417,9 +464,20 @@ export async function startHttpMcpServer(
           await newTransport.close();
         } catch {}
       }
-      console.error("[affine-mcp] Error handling /mcp request:", e);
+      console.error(`[affine-mcp] Error handling /mcp request (requestId=${requestId}):`, e);
       if (!res.headersSent) {
-        sendJsonRpcError(res, 500, -32603, "Internal server error");
+        const classification = classifyToolError(e);
+        const rpcId = typeof req.body?.id === "string" || typeof req.body?.id === "number"
+          ? req.body.id
+          : null;
+        sendJsonRpcError(res, 500, -32603, "Internal error", {
+          type: classification.code,
+          operation: "mcp.http.request",
+          requestId,
+          retryable: classification.retryable,
+          detail: classification.detail,
+          ...(classification.status !== undefined ? { status: classification.status } : {}),
+        }, rpcId);
       }
     } finally {
       endSessionRequest?.();
@@ -435,20 +493,30 @@ export async function startHttpMcpServer(
   // ===========================================================================
   app.get("/sse", corsMiddleware, authMiddleware, async (req, res) => {
     let transport: SSEServerTransport | undefined;
+    let releaseReservation: (() => void) | undefined;
     try {
       if (shutdownPromise) {
         rejectUnavailable(res, "Server is shutting down");
         return;
       }
-      if (!hasSessionCapacity()) {
-        rejectUnavailable(res, "Server busy: maximum HTTP MCP session capacity reached");
+      const reservation = reserveSessionSlot();
+      if (!reservation) {
+        rejectUnavailable(
+          res,
+          "Server busy: all HTTP MCP sessions have active requests",
+          capacityData(randomUUID()),
+        );
         return;
       }
+      releaseReservation = reservation.release;
+      void reservation.eviction;
 
       // @ts-ignore — intentional: SSEServerTransport retained for backward compat only
       transport = new SSEServerTransport("/messages", res);
       const sessionId = transport.sessionId;
       registerSession(sessionId, transport, "legacy-sse");
+      releaseReservation();
+      releaseReservation = undefined;
 
       res.on("close", () => {
         console.error(`[affine-mcp] Legacy SSE session closed: ${sessionId}`);
@@ -461,6 +529,7 @@ export async function startHttpMcpServer(
         `[affine-mcp] Legacy SSE session established: ${sessionId}`,
       );
     } catch (e) {
+      releaseReservation?.();
       if (transport) {
         removeSession(transport.sessionId, transport);
         try {

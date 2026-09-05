@@ -1,9 +1,108 @@
 import { io, Socket } from "socket.io-client";
+import { loadWsRuntimeConfig } from "./wsRuntimeConfig.js";
+import { currentToolAbortSignal } from "./toolExecution.js";
 
 export type WorkspaceSocket = Socket<any, any>;
 const DEFAULT_WS_CLIENT_VERSION = process.env.AFFINE_WS_CLIENT_VERSION || process.env.AFFINE_CLIENT_VERSION || '0.26.0';
-const WS_CONNECT_TIMEOUT_MS = Number(process.env.AFFINE_WS_CONNECT_TIMEOUT_MS || 10000);
-const WS_ACK_TIMEOUT_MS = Number(process.env.AFFINE_WS_ACK_TIMEOUT_MS || 10000);
+const WS_RUNTIME_CONFIG = loadWsRuntimeConfig();
+const WS_CONNECT_TIMEOUT_MS = WS_RUNTIME_CONFIG.connectTimeoutMs;
+const WS_ACK_TIMEOUT_MS = WS_RUNTIME_CONFIG.ackTimeoutMs;
+
+type QueueEntry = {
+  resolve: (release: () => void) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+  cleanupAbort: () => void;
+};
+
+export class WorkspaceSocketBusyError extends Error {
+  readonly code = "AFFINE_WS_BUSY";
+  readonly retryAfterMs = 1_000;
+  readonly capacity: Record<string, number | string>;
+
+  constructor(message: string, capacity: Record<string, number | string>) {
+    super(message);
+    this.name = "WorkspaceSocketBusyError";
+    this.capacity = capacity;
+  }
+}
+
+export class WorkspaceSocketCapacityLimiter {
+  private readonly queue: QueueEntry[] = [];
+  private active = 0;
+
+  constructor(private readonly limits: Pick<
+    typeof WS_RUNTIME_CONFIG,
+    "maxConcurrent" | "maxQueue" | "queueTimeoutMs"
+  >) {}
+
+  snapshot(): Record<string, number | string> {
+    return {
+      resource: "affine_websocket_connections",
+      active: this.active,
+      limit: this.limits.maxConcurrent,
+      queued: this.queue.length,
+      queueLimit: this.limits.maxQueue,
+    };
+  }
+
+  private makeRelease(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active = Math.max(0, this.active - 1);
+      const next = this.queue.shift();
+      if (!next) return;
+      clearTimeout(next.timer);
+      next.cleanupAbort();
+      this.active += 1;
+      next.resolve(this.makeRelease());
+    };
+  }
+
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) {
+      return Promise.reject(Object.assign(new Error("The operation was aborted"), { code: "ABORT_ERR" }));
+    }
+    if (this.active < this.limits.maxConcurrent) {
+      this.active += 1;
+      return Promise.resolve(this.makeRelease());
+    }
+    if (this.queue.length >= this.limits.maxQueue) {
+      return Promise.reject(new WorkspaceSocketBusyError(
+        "AFFiNE WebSocket capacity and queue are full",
+        this.snapshot(),
+      ));
+    }
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        const index = this.queue.indexOf(entry);
+        if (index >= 0) this.queue.splice(index, 1);
+        clearTimeout(entry.timer);
+        reject(Object.assign(new Error("The operation was aborted"), { code: "ABORT_ERR" }));
+      };
+      const entry: QueueEntry = {
+        resolve,
+        reject,
+        cleanupAbort: () => signal?.removeEventListener("abort", onAbort),
+        timer: setTimeout(() => {
+          const index = this.queue.indexOf(entry);
+          if (index >= 0) this.queue.splice(index, 1);
+          entry.cleanupAbort();
+          reject(new WorkspaceSocketBusyError(
+            `Timed out after ${this.limits.queueTimeoutMs}ms waiting for AFFiNE WebSocket capacity`,
+            this.snapshot(),
+          ));
+        }, this.limits.queueTimeoutMs),
+      };
+      this.queue.push(entry);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+}
+
+const socketCapacity = new WorkspaceSocketCapacityLimiter(WS_RUNTIME_CONFIG);
 
 function ackErrorMessage(ack: any, fallback: string): string | null {
   const message = ack?.error?.message;
@@ -72,6 +171,8 @@ export function wsUrlFromGraphQLEndpoint(endpoint: string): string {
 }
 
 export async function connectWorkspaceSocket(wsUrl: string, cookie?: string, bearer?: string): Promise<WorkspaceSocket> {
+  const signal = currentToolAbortSignal();
+  const releaseSlot = await socketCapacity.acquire(signal);
   return new Promise((resolve, reject) => {
     let settled = false;
     const extraHeaders: Record<string, string> = {};
@@ -88,6 +189,7 @@ export async function connectWorkspaceSocket(wsUrl: string, cookie?: string, bea
       settled = true;
       cleanup();
       socket.disconnect();
+      releaseSlot();
       reject(new Error(`socket connect timeout after ${WS_CONNECT_TIMEOUT_MS}ms`));
     }, WS_CONNECT_TIMEOUT_MS);
     const onError = (err: any) => {
@@ -95,21 +197,40 @@ export async function connectWorkspaceSocket(wsUrl: string, cookie?: string, bea
       settled = true;
       cleanup();
       socket.disconnect();
+      releaseSlot();
       reject(err);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      socket.disconnect();
+      releaseSlot();
+      reject(Object.assign(new Error("The operation was aborted"), { code: "ABORT_ERR" }));
     };
     const onConnect = () => {
       if (settled) return;
       settled = true;
       cleanup();
+      if (signal) {
+        const disconnectOnAbort = () => socket.disconnect();
+        signal.addEventListener('abort', disconnectOnAbort, { once: true });
+        socket.once('disconnect', () => signal.removeEventListener('abort', disconnectOnAbort));
+        if (signal.aborted) disconnectOnAbort();
+      }
+      socket.once('disconnect', releaseSlot);
       resolve(socket);
     };
     const cleanup = () => {
       clearTimeout(timeout);
       socket.off('connect', onConnect);
       socket.off('connect_error', onError);
+      signal?.removeEventListener('abort', onAbort);
     };
     socket.on('connect', onConnect);
     socket.on('connect_error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 
