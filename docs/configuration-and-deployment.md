@@ -312,7 +312,7 @@ Available profiles:
 - `full`: expose the complete public tool surface; this is the default outside OAuth mode
 - `read_only`: expose discovery, reading, export, fidelity, and inspection tools, plus `sign_in`
 - `core`: expose the compact everyday surface for workspace/doc discovery, basic document authoring, tags, and database row/schema edits; omits admin tools, cleanup tools, experimental organize tools, and destructive tools
-- `authoring`: expose non-destructive creation and editing tools, including semantic pages, native templates, database composition, and edgeless canvas authoring; omits admin, cleanup, destructive, and experimental organize tools
+- `authoring`: expose every `read_only` tool plus non-destructive creation and editing tools, including semantic pages, native templates, database composition, and edgeless canvas authoring; omits admin, cleanup, destructive, and experimental organize write tools
 
 Profile, group, and tool names are validated at startup. An unknown value stops the server instead of falling back to a broader tool surface. This prevents a configuration typo from silently enabling tools that an operator intended to hide.
 

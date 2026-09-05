@@ -311,12 +311,16 @@ async function run() {
       "update_profile",
     ];
     const visibleRestricted = hiddenAuthoring.filter(t => tools8.includes(t));
-    const expectedAuthoring = ["create_semantic_page", "instantiate_template_native", "add_surface_element", "move_block", "trash_doc", "restore_doc", "update_block", "update_table_cell", "update_surface_element"];
+    const expectedAuthoring = ["create_semantic_page", "instantiate_template_native", "add_surface_element", "move_block", "trash_doc", "restore_doc", "update_block", "update_table_cell", "update_surface_element", "list_organize_nodes", "get_folder_icon"];
     const missingAuthoring = expectedAuthoring.filter(t => !tools8.includes(t));
-    if (visibleRestricted.length === 0 && missingAuthoring.length === 0) {
-      console.log("✅ Success: Authoring profile keeps editing tools while hiding restricted tools.");
+    const readOnlyMissingFromAuthoring = tools6.filter(t => !tools8.includes(t));
+    if (visibleRestricted.length === 0 && missingAuthoring.length === 0 && readOnlyMissingFromAuthoring.length === 0) {
+      console.log("✅ Success: Authoring keeps all read-only and editing tools while hiding restricted writes.");
     } else {
-      console.error(`❌ Failed: Authoring profile mismatch. visible=${visibleRestricted.join(", ")} missing=${missingAuthoring.join(", ")}`);
+      console.error(
+        `❌ Failed: Authoring profile mismatch. visible=${visibleRestricted.join(", ")} ` +
+        `missing=${missingAuthoring.join(", ")} readOnlyMissing=${readOnlyMissingFromAuthoring.join(", ")}`,
+      );
       hasFailures = true;
     }
 

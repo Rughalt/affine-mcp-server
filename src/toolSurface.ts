@@ -341,6 +341,9 @@ function profileAllowsTool(profile: ToolProfile, toolName: ToolName): boolean {
   if (profile === "core") {
     return CORE_TOOLS.has(toolName);
   }
+  if (READ_ONLY_TOOLS.has(toolName)) {
+    return true;
+  }
   const groups = TOOL_GROUPS[toolName];
   return !groups.some(group => AUTHORING_EXCLUDED_GROUPS.has(group));
 }
