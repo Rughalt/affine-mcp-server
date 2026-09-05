@@ -49,6 +49,7 @@ export type ServerConfig = {
   oauthIssuerUrl?: string;
   oauthAudiences: string[];
   oauthScopes: string[];
+  oauthTokenScopes: string[];
   oauthClockSkewSeconds: number;
   transportMode: TransportMode;
   loginAtStart: LoginAtStartMode;
@@ -308,6 +309,15 @@ function parseOAuthAudiences(raw: string | undefined): string[] {
   )];
 }
 
+function parseOAuthTokenScopes(raw: string | undefined): string[] {
+  return [...new Set(
+    (raw || "")
+      .split(/[\s,]+/)
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  )];
+}
+
 function parsePositiveIntegerEnv(name: string, raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   if (!/^\d+$/.test(raw.trim())) {
@@ -415,6 +425,7 @@ export function loadConfig(): ServerConfig {
     : undefined;
   const oauthAudiences = parseOAuthAudiences(env("AFFINE_OAUTH_AUDIENCES", file));
   const oauthScopes = parseOAuthScopes(env("AFFINE_OAUTH_SCOPES", file, "mcp"));
+  const oauthTokenScopes = parseOAuthTokenScopes(env("AFFINE_OAUTH_TOKEN_SCOPES", file));
   const oauthClockSkewSeconds = parsePositiveIntegerEnv(
     "AFFINE_OAUTH_CLOCK_SKEW_SECONDS",
     env("AFFINE_OAUTH_CLOCK_SKEW_SECONDS", file),
@@ -454,6 +465,7 @@ export function loadConfig(): ServerConfig {
     oauthIssuerUrl,
     oauthAudiences,
     oauthScopes,
+    oauthTokenScopes,
     oauthClockSkewSeconds,
     transportMode,
     loginAtStart,

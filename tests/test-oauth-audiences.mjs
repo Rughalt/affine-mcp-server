@@ -60,7 +60,12 @@ function cleanEnvironment(extra = {}) {
 const isolatedConfigHome = path.join(os.tmpdir(), `affine-mcp-oauth-audiences-${process.pid}`);
 process.env.XDG_CONFIG_HOME = isolatedConfigHome;
 const { loadConfig } = await import("../dist/config.js");
-const { buildAudienceList, verifyOAuthAccessToken } = await import("../dist/oauth.js");
+const {
+  buildAudienceList,
+  buildOAuthProtectedResourceMetadata,
+  buildRequiredTokenScopeList,
+  verifyOAuthAccessToken,
+} = await import("../dist/oauth.js");
 const { createHttpAuthState } = await import("../dist/httpAuth.js");
 
 const parserCases = [
@@ -79,6 +84,23 @@ for (const [raw, expected] of parserCases) {
   expectEqual(loadConfig().oauthAudiences, expected, `parser case ${JSON.stringify(raw)}`);
 }
 delete process.env.AFFINE_OAUTH_AUDIENCES;
+
+const tokenScopeParserCases = [
+  [undefined, []],
+  ["", []],
+  [" , , \t\n", []],
+  ["MCP", ["MCP"]],
+  ["MCP,profile", ["MCP", "profile"]],
+  ["MCP profile\tfiles\nemail", ["MCP", "profile", "files", "email"]],
+  ["MCP, profile\tMCP profile", ["MCP", "profile"]],
+];
+
+for (const [raw, expected] of tokenScopeParserCases) {
+  if (raw === undefined) delete process.env.AFFINE_OAUTH_TOKEN_SCOPES;
+  else process.env.AFFINE_OAUTH_TOKEN_SCOPES = raw;
+  expectEqual(loadConfig().oauthTokenScopes, expected, `token scope parser case ${JSON.stringify(raw)}`);
+}
+delete process.env.AFFINE_OAUTH_TOKEN_SCOPES;
 
 const baseOAuthConfig = {
   publicBaseUrl: "https://mcp.example.com/",
@@ -110,6 +132,16 @@ expectEqual(
     "client-id",
   ],
   "extended audience list",
+);
+expectEqual(
+  buildRequiredTokenScopeList({ scopes: ["advertised"] }),
+  ["advertised"],
+  "token scope fallback",
+);
+expectEqual(
+  buildRequiredTokenScopeList({ scopes: ["advertised"], tokenScopes: ["token-scope"] }),
+  ["token-scope"],
+  "token scope override",
 );
 
 const trustedKeys = await generateKeyPair("RS256");
@@ -174,9 +206,16 @@ try {
     scopes: ["mcp"],
     clockSkewSeconds: 60,
   };
-  const mint = ({ audience, issuer = issuerUrl, expiresAt, key = trustedKeys.privateKey }) => {
+  const mint = ({
+    audience,
+    issuer = issuerUrl,
+    expiresAt,
+    key = trustedKeys.privateKey,
+    scope = "mcp",
+    scopeClaim = "scope",
+  }) => {
     const now = Math.floor(Date.now() / 1000);
-    return new SignJWT({ scope: "mcp", client_id: "client" })
+    return new SignJWT({ [scopeClaim]: scope, client_id: "client" })
       .setProtectedHeader({ alg: "RS256", kid: "trusted-key" })
       .setIssuer(issuer)
       .setAudience(audience)
@@ -205,29 +244,55 @@ try {
     AFFINE_MCP_PUBLIC_BASE_URL: publicBaseUrl,
     AFFINE_OAUTH_ISSUER_URL: issuerUrl,
     AFFINE_OAUTH_AUDIENCES: entraClientId,
+    AFFINE_OAUTH_SCOPES: `${publicBaseUrl}/mcp/MCP`,
+    AFFINE_OAUTH_TOKEN_SCOPES: "MCP",
   });
   const runtimeConfig = loadConfig();
   const authState = createHttpAuthState(runtimeConfig, { allowAnyOrigin: false });
   expectEqual(authState.oauthConfig?.audiences, [entraClientId], "runtime OAuth audience propagation");
-  const runtimeToken = await mint({ audience: entraClientId });
-  const middlewareResult = await new Promise((resolve) => {
+  expectEqual(authState.oauthConfig?.tokenScopes, ["MCP"], "runtime OAuth token scope propagation");
+  expectEqual(
+    buildOAuthProtectedResourceMetadata(authState.oauthConfig).scopes_supported,
+    [`${publicBaseUrl}/mcp/MCP`],
+    "advertised OAuth scopes remain unchanged",
+  );
+  const invokeMiddleware = (state, token) => new Promise((resolve) => {
     const response = {
       statusCode: 200,
       set() { return this; },
       status(code) { this.statusCode = code; return this; },
       json(body) { resolve({ accepted: false, statusCode: this.statusCode, body }); return this; },
     };
-    authState.authMiddleware(
+    state.authMiddleware(
       {
         method: "POST",
         query: {},
-        headers: { authorization: `Bearer ${runtimeToken}` },
+        headers: { authorization: `Bearer ${token}` },
       },
       response,
       () => resolve({ accepted: true, statusCode: response.statusCode }),
     );
   });
-  expect(middlewareResult.accepted, "runtime JWT validator did not receive AFFINE_OAUTH_AUDIENCES");
+  const runtimeToken = await mint({ audience: entraClientId, scope: "MCP", scopeClaim: "scp" });
+  const middlewareResult = await invokeMiddleware(authState, runtimeToken);
+  expect(middlewareResult.accepted, "runtime validator did not accept configured audience and token scope");
+  const missingTokenScopeResult = await invokeMiddleware(
+    authState,
+    await mint({ audience: entraClientId, scope: "profile" }),
+  );
+  expectEqual(missingTokenScopeResult.statusCode, 403, "missing token scope status");
+  expectEqual(missingTokenScopeResult.body?.error, "insufficient_scope", "missing token scope error");
+
+  delete process.env.AFFINE_OAUTH_TOKEN_SCOPES;
+  const fallbackAuthState = createHttpAuthState(loadConfig(), { allowAnyOrigin: false });
+  expectEqual(fallbackAuthState.oauthConfig?.tokenScopes, [], "unset token scope runtime value");
+  const fallbackRejectsShortScope = await invokeMiddleware(fallbackAuthState, runtimeToken);
+  expectEqual(fallbackRejectsShortScope.statusCode, 403, "fallback rejects short token scope");
+  const fallbackAcceptsAdvertisedScope = await invokeMiddleware(
+    fallbackAuthState,
+    await mint({ audience: entraClientId, scope: `${publicBaseUrl}/mcp/MCP` }),
+  );
+  expect(fallbackAcceptsAdvertisedScope.accepted, "fallback did not validate against advertised OAuth scopes");
   await expectRejected(
     verifyOAuthAccessToken(await mint({ audience: "unknown" }), {
       ...verificationConfig,
@@ -269,6 +334,8 @@ try {
     AFFINE_MCP_PUBLIC_BASE_URL: publicBaseUrl,
     AFFINE_OAUTH_ISSUER_URL: issuerUrl,
     AFFINE_OAUTH_AUDIENCES: `${entraClientId}, ${publicBaseUrl}/mcp`,
+    AFFINE_OAUTH_SCOPES: `${publicBaseUrl}/mcp/MCP`,
+    AFFINE_OAUTH_TOKEN_SCOPES: "MCP, profile MCP",
   });
   const showConfig = await runNode([DIST_ENTRY, "show-config", "--json"], cliEnv);
   expect(showConfig.code === 0, `show-config failed: ${showConfig.stderr}`);
@@ -280,6 +347,10 @@ try {
     "show-config effective audiences",
   );
   expect(summary.sources.oauthAudiences === "env", "show-config audience source was not env");
+  expectEqual(summary.oauthScopes, [`${publicBaseUrl}/mcp/MCP`], "show-config advertised scopes");
+  expectEqual(summary.oauthTokenScopes, ["MCP", "profile"], "show-config token scopes");
+  expectEqual(summary.oauthEffectiveTokenScopes, ["MCP", "profile"], "show-config effective token scopes");
+  expect(summary.sources.oauthTokenScopes === "env", "show-config token scope source was not env");
 
   const doctor = await runNode([DIST_ENTRY, "doctor", "--json"], cliEnv);
   expect(doctor.code === 0, `doctor failed: ${doctor.stderr}\n${doctor.stdout}`);
@@ -292,6 +363,14 @@ try {
     ),
     "doctor did not report the effective OAuth audiences",
   );
+  expect(
+    doctorPayload.checks.some(
+      (check) => check.name === "oauth-token-scopes"
+        && check.ok
+        && check.detail === "MCP, profile (env)",
+    ),
+    "doctor did not report the effective OAuth token scopes",
+  );
 } finally {
   await new Promise((resolve) => issuerServer.close(resolve));
 }
@@ -300,9 +379,11 @@ console.log(JSON.stringify({
   ok: true,
   cases: [
     "audience parser",
+    "token scope parser and fallback",
     "default and extended lists",
     "JWT audience validation",
     "ENV-to-runtime validator propagation",
+    "advertised versus token scope separation",
     "signature, issuer, and expiry regressions",
     "show-config and doctor diagnostics",
   ],

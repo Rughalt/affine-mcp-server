@@ -216,6 +216,7 @@ function testQueryTokenShapeRejection() {
     baseUrl: "http://127.0.0.1:3010",
     graphqlPath: "/graphql",
     oauthScopes: ["mcp"],
+    oauthTokenScopes: [],
     oauthClockSkewSeconds: 60,
   };
   const oauth = createHttpAuthState(

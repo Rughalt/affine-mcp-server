@@ -15,7 +15,12 @@ import {
   writeConfigFile,
 } from "./config.js";
 import { loginWithPassword } from "./auth.js";
-import { buildAudienceList, probeOAuthReadiness, validateOAuthConfig } from "./oauth.js";
+import {
+  buildAudienceList,
+  buildRequiredTokenScopeList,
+  probeOAuthReadiness,
+  validateOAuthConfig,
+} from "./oauth.js";
 import { parseBooleanFlag } from "./networkSecurity.js";
 import { fetchResponseBody } from "./util/httpResponse.js";
 
@@ -241,6 +246,11 @@ function buildEffectiveConfigSummary(effective: ServerConfig = loadConfig()) {
         })
       : effective.oauthAudiences,
     oauthScopes: effective.oauthScopes,
+    oauthTokenScopes: effective.oauthTokenScopes,
+    oauthEffectiveTokenScopes: buildRequiredTokenScopeList({
+      scopes: effective.oauthScopes,
+      tokenScopes: effective.oauthTokenScopes,
+    }),
     oauthClockSkewSeconds: effective.oauthClockSkewSeconds,
     transportMode: effective.transportMode,
     loginAtStart: effective.loginAtStart,
@@ -265,6 +275,7 @@ function buildEffectiveConfigSummary(effective: ServerConfig = loadConfig()) {
       oauthIssuerUrl: getConfigValueSource("AFFINE_OAUTH_ISSUER_URL", stored),
       oauthAudiences: getConfigValueSource("AFFINE_OAUTH_AUDIENCES", stored),
       oauthScopes: getConfigValueSource("AFFINE_OAUTH_SCOPES", stored, "mcp"),
+      oauthTokenScopes: getConfigValueSource("AFFINE_OAUTH_TOKEN_SCOPES", stored),
       oauthClockSkewSeconds: getConfigValueSource("AFFINE_OAUTH_CLOCK_SKEW_SECONDS", stored, "60"),
       transportMode: getConfigValueSource("MCP_TRANSPORT", stored, "stdio"),
       loginAtStart: getConfigValueSource("AFFINE_LOGIN_AT_START", stored, "async"),
@@ -758,7 +769,12 @@ function showConfig(args: string[]) {
       `(${summary.sources.oauthAudiences})`,
     );
     console.log(`Effective OAuth audiences: ${summary.oauthEffectiveAudiences.join(", ")}`);
-    console.log(`OAuth scopes: ${summary.oauthScopes.join(", ")} (${summary.sources.oauthScopes})`);
+    console.log(`Advertised OAuth scopes: ${summary.oauthScopes.join(", ")} (${summary.sources.oauthScopes})`);
+    console.log(
+      `OAuth token scopes: ${summary.oauthTokenScopes.join(", ") || "(fallback to advertised scopes)"} ` +
+      `(${summary.sources.oauthTokenScopes})`,
+    );
+    console.log(`Effective required token scopes: ${summary.oauthEffectiveTokenScopes.join(", ")}`);
     console.log(
       `OAuth clock skew: ${summary.oauthClockSkewSeconds}s (${summary.sources.oauthClockSkewSeconds})`,
     );
@@ -880,6 +896,7 @@ async function doctor(args: string[]) {
         issuerUrl: effective.oauthIssuerUrl,
         audiences: effective.oauthAudiences,
         scopes: effective.oauthScopes,
+        tokenScopes: effective.oauthTokenScopes,
         clockSkewSeconds: effective.oauthClockSkewSeconds,
       };
       try {
@@ -896,6 +913,15 @@ async function doctor(args: string[]) {
           name: "oauth-audiences",
           ok: true,
           detail: buildAudienceList(oauthConfig).join(", "),
+        });
+        checks.push({
+          name: "oauth-token-scopes",
+          ok: true,
+          detail:
+            `${buildRequiredTokenScopeList(oauthConfig).join(", ")} ` +
+            `(${summary.oauthTokenScopes.length > 0
+              ? summary.sources.oauthTokenScopes
+              : `fallback: ${summary.sources.oauthScopes}`})`,
         });
         try {
           const readiness = await probeOAuthReadiness(oauthConfig);
@@ -972,6 +998,9 @@ function getSnippetEnv(): Record<string, string> {
       env.AFFINE_OAUTH_AUDIENCES = effective.oauthAudiences.join(",");
     }
     if (effective.oauthScopes.length > 0) env.AFFINE_OAUTH_SCOPES = effective.oauthScopes.join(" ");
+    if (effective.oauthTokenScopes.length > 0) {
+      env.AFFINE_OAUTH_TOKEN_SCOPES = effective.oauthTokenScopes.join(" ");
+    }
   }
   return env;
 }

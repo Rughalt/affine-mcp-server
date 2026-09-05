@@ -7,6 +7,7 @@ export type OAuthConfig = {
   issuerUrl: string;
   audiences?: string[];
   scopes: string[];
+  tokenScopes?: string[];
   clockSkewSeconds: number;
 };
 
@@ -103,6 +104,14 @@ export function buildAudienceList(
     resourceUrl,
     ...(config.audiences || []).filter(Boolean),
   ])];
+}
+
+export function buildRequiredTokenScopeList(
+  config: Pick<OAuthConfig, "scopes" | "tokenScopes">,
+): string[] {
+  return config.tokenScopes && config.tokenScopes.length > 0
+    ? config.tokenScopes
+    : config.scopes;
 }
 
 function getScopesFromPayload(payload: JWTPayload): string[] {

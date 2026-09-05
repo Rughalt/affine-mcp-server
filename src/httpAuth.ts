@@ -7,6 +7,7 @@ import type { ServerConfig } from "./config.js";
 import type { OAuthConfig } from "./oauth.js";
 import {
   buildOAuthProtectedResourceMetadata,
+  buildRequiredTokenScopeList,
   getOAuthProtectedResourceMetadataPaths,
   getOAuthProtectedResourceMetadataUrl,
   validateOAuthConfig,
@@ -82,6 +83,7 @@ export function createHttpAuthState(
       issuerUrl: config.oauthIssuerUrl,
       audiences: config.oauthAudiences,
       scopes: config.oauthScopes,
+      tokenScopes: config.oauthTokenScopes,
       clockSkewSeconds: config.oauthClockSkewSeconds,
     };
     validateOAuthConfig(oauthConfig, opts);
@@ -127,7 +129,7 @@ export function createHttpAuthState(
 
       void verifyOAuthAccessToken(bearerMatch[1], oauthConfig)
         .then((authInfo) => {
-          const requiredScopes = oauthConfig?.scopes || [];
+          const requiredScopes = oauthConfig ? buildRequiredTokenScopeList(oauthConfig) : [];
           const hasAllScopes = requiredScopes.every((scope) => authInfo.scopes.includes(scope));
           if (!hasAllScopes) {
             res.set("WWW-Authenticate", buildWwwAuthenticateHeader(protectedResourceMetadataUrl, {

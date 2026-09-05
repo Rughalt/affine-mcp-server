@@ -111,6 +111,7 @@ and response limit above.
 | `AFFINE_OAUTH_ISSUER_URL` | Required in OAuth mode | none | OAuth issuer discovery URL |
 | `AFFINE_OAUTH_AUDIENCES` | No | none | Additional accepted JWT `aud` values, separated by commas or whitespace |
 | `AFFINE_OAUTH_SCOPES` | No | `mcp` | Scopes advertised for OAuth-protected access |
+| `AFFINE_OAUTH_TOKEN_SCOPES` | No | `AFFINE_OAUTH_SCOPES` | Scopes required in JWT `scope` / `scp`; comma- or whitespace-separated |
 | `AFFINE_OAUTH_CLOCK_SKEW_SECONDS` | No | `60` | Positive integer tolerance for OAuth token timestamps |
 | `AFFINE_OAUTH_ALLOW_SERVICE_WRITES` | No | `false` | Explicitly acknowledge write-capable tools using the shared AFFiNE service identity |
 
@@ -266,6 +267,22 @@ The effective accepted list is `https://mcp.example.com`,
 `https://mcp.example.com/mcp`, and
 `2483a7b3-852b-40ab-8793-646158399750`. `affine-mcp show-config` and
 `affine-mcp doctor` display this effective list.
+
+`AFFINE_OAUTH_SCOPES` controls the scopes advertised to OAuth clients. By
+default, those same values are required in the access token's `scope` or `scp`
+claim. Set `AFFINE_OAUTH_TOKEN_SCOPES` to override only the token-side check;
+comma and whitespace separators are accepted. For example, Microsoft Entra ID
+v2 can advertise a fully qualified API scope while emitting only its short name
+in `scp`:
+
+```env
+AFFINE_OAUTH_SCOPES=https://mcp-miyu.dragonshorn.cloud/mcp/MCP
+AFFINE_OAUTH_TOKEN_SCOPES=MCP
+```
+
+The protected-resource metadata still advertises the full URI, while tokens
+must contain `MCP`. Leaving `AFFINE_OAUTH_TOKEN_SCOPES` unset or empty preserves
+the existing behavior.
 
 To allow service-account writes, configure both controls explicitly:
 
