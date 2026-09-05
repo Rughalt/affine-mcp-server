@@ -5,6 +5,7 @@ import { discoverAuthorizationServerMetadata } from "@modelcontextprotocol/sdk/c
 export type OAuthConfig = {
   publicBaseUrl: string;
   issuerUrl: string;
+  audiences?: string[];
   scopes: string[];
   clockSkewSeconds: number;
 };
@@ -92,10 +93,16 @@ export function validateOAuthConfig(config: OAuthConfig, opts: { allowAnyOrigin:
   }
 }
 
-function buildAudienceList(config: OAuthConfig): string[] {
+export function buildAudienceList(
+  config: Pick<OAuthConfig, "publicBaseUrl" | "audiences">,
+): string[] {
   const publicBaseUrl = config.publicBaseUrl.replace(/\/$/, "");
   const resourceUrl = getOAuthResourceUrl(config.publicBaseUrl);
-  return [...new Set([publicBaseUrl, resourceUrl])];
+  return [...new Set([
+    publicBaseUrl,
+    resourceUrl,
+    ...(config.audiences || []).filter(Boolean),
+  ])];
 }
 
 function getScopesFromPayload(payload: JWTPayload): string[] {

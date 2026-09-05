@@ -47,6 +47,7 @@ export type ServerConfig = {
   authMode: "bearer" | "oauth";
   publicBaseUrl?: string;
   oauthIssuerUrl?: string;
+  oauthAudiences: string[];
   oauthScopes: string[];
   oauthClockSkewSeconds: number;
   transportMode: TransportMode;
@@ -298,6 +299,15 @@ function parseOAuthScopes(raw: string | undefined): string[] {
   return scopes.length > 0 ? scopes : ["mcp"];
 }
 
+function parseOAuthAudiences(raw: string | undefined): string[] {
+  return [...new Set(
+    (raw || "")
+      .split(/[\s,]+/)
+      .map((audience) => audience.trim())
+      .filter(Boolean),
+  )];
+}
+
 function parsePositiveIntegerEnv(name: string, raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   if (!/^\d+$/.test(raw.trim())) {
@@ -403,6 +413,7 @@ export function loadConfig(): ServerConfig {
   const oauthIssuerUrl = oauthIssuerUrlRaw
     ? validateBaseUrl(oauthIssuerUrlRaw, { label: "AFFINE_OAUTH_ISSUER_URL" })
     : undefined;
+  const oauthAudiences = parseOAuthAudiences(env("AFFINE_OAUTH_AUDIENCES", file));
   const oauthScopes = parseOAuthScopes(env("AFFINE_OAUTH_SCOPES", file, "mcp"));
   const oauthClockSkewSeconds = parsePositiveIntegerEnv(
     "AFFINE_OAUTH_CLOCK_SKEW_SECONDS",
@@ -441,6 +452,7 @@ export function loadConfig(): ServerConfig {
     authMode,
     publicBaseUrl,
     oauthIssuerUrl,
+    oauthAudiences,
     oauthScopes,
     oauthClockSkewSeconds,
     transportMode,

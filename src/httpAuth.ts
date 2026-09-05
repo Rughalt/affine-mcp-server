@@ -80,6 +80,7 @@ export function createHttpAuthState(
     oauthConfig = {
       publicBaseUrl: config.publicBaseUrl,
       issuerUrl: config.oauthIssuerUrl,
+      audiences: config.oauthAudiences,
       scopes: config.oauthScopes,
       clockSkewSeconds: config.oauthClockSkewSeconds,
     };

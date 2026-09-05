@@ -109,6 +109,7 @@ and response limit above.
 | `AFFINE_MCP_HTTP_SHUTDOWN_TIMEOUT_MS` | No | `10000` | Deadline before remaining HTTP connections are forcibly closed |
 | `AFFINE_MCP_PUBLIC_BASE_URL` | Required in OAuth mode | none | Public base URL for this MCP server |
 | `AFFINE_OAUTH_ISSUER_URL` | Required in OAuth mode | none | OAuth issuer discovery URL |
+| `AFFINE_OAUTH_AUDIENCES` | No | none | Additional accepted JWT `aud` values, separated by commas or whitespace |
 | `AFFINE_OAUTH_SCOPES` | No | `mcp` | Scopes advertised for OAuth-protected access |
 | `AFFINE_OAUTH_CLOCK_SKEW_SECONDS` | No | `60` | Positive integer tolerance for OAuth token timestamps |
 | `AFFINE_OAUTH_ALLOW_SERVICE_WRITES` | No | `false` | Explicitly acknowledge write-capable tools using the shared AFFiNE service identity |
@@ -248,6 +249,23 @@ OAuth mode behavior:
 - authenticates callers at the MCP boundary but does not delegate their identity to AFFiNE; every request uses the same configured backend service identity
 - defaults `AFFINE_TOOL_PROFILE` to `read_only` when no profile is configured
 - refuses any write-capable tool surface unless `AFFINE_OAUTH_ALLOW_SERVICE_WRITES=true` is also set
+
+By default, JWT audience validation accepts the normalized public base URL and its
+`/mcp` resource URL, in that order. `AFFINE_OAUTH_AUDIENCES` appends exact,
+case-sensitive values to that list; it never replaces or URL-normalizes the defaults.
+Commas and whitespace are accepted as separators, and empty or duplicate entries are
+ignored. This is useful with Microsoft Entra ID v2, whose access token can use the API
+application's client ID as `aud`:
+
+```env
+AFFINE_MCP_PUBLIC_BASE_URL=https://mcp.example.com
+AFFINE_OAUTH_AUDIENCES=2483a7b3-852b-40ab-8793-646158399750
+```
+
+The effective accepted list is `https://mcp.example.com`,
+`https://mcp.example.com/mcp`, and
+`2483a7b3-852b-40ab-8793-646158399750`. `affine-mcp show-config` and
+`affine-mcp doctor` display this effective list.
 
 To allow service-account writes, configure both controls explicitly:
 

@@ -15,7 +15,7 @@ import {
   writeConfigFile,
 } from "./config.js";
 import { loginWithPassword } from "./auth.js";
-import { probeOAuthReadiness, validateOAuthConfig } from "./oauth.js";
+import { buildAudienceList, probeOAuthReadiness, validateOAuthConfig } from "./oauth.js";
 import { parseBooleanFlag } from "./networkSecurity.js";
 import { fetchResponseBody } from "./util/httpResponse.js";
 
@@ -233,6 +233,13 @@ function buildEffectiveConfigSummary(effective: ServerConfig = loadConfig()) {
     email: effective.email || null,
     publicBaseUrl: effective.publicBaseUrl || null,
     oauthIssuerUrl: effective.oauthIssuerUrl || null,
+    oauthAudiences: effective.oauthAudiences,
+    oauthEffectiveAudiences: effective.publicBaseUrl
+      ? buildAudienceList({
+          publicBaseUrl: effective.publicBaseUrl,
+          audiences: effective.oauthAudiences,
+        })
+      : effective.oauthAudiences,
     oauthScopes: effective.oauthScopes,
     oauthClockSkewSeconds: effective.oauthClockSkewSeconds,
     transportMode: effective.transportMode,
@@ -256,6 +263,7 @@ function buildEffectiveConfigSummary(effective: ServerConfig = loadConfig()) {
       authMode: getConfigValueSource("AFFINE_MCP_AUTH_MODE", stored, "bearer"),
       publicBaseUrl: getConfigValueSource("AFFINE_MCP_PUBLIC_BASE_URL", stored),
       oauthIssuerUrl: getConfigValueSource("AFFINE_OAUTH_ISSUER_URL", stored),
+      oauthAudiences: getConfigValueSource("AFFINE_OAUTH_AUDIENCES", stored),
       oauthScopes: getConfigValueSource("AFFINE_OAUTH_SCOPES", stored, "mcp"),
       oauthClockSkewSeconds: getConfigValueSource("AFFINE_OAUTH_CLOCK_SKEW_SECONDS", stored, "60"),
       transportMode: getConfigValueSource("MCP_TRANSPORT", stored, "stdio"),
@@ -745,6 +753,11 @@ function showConfig(args: string[]) {
   if (summary.publicBaseUrl) console.log(`Public base URL: ${summary.publicBaseUrl} (${summary.sources.publicBaseUrl})`);
   if (summary.oauthIssuerUrl) console.log(`OAuth issuer URL: ${summary.oauthIssuerUrl} (${summary.sources.oauthIssuerUrl})`);
   if (summary.authMode === "oauth") {
+    console.log(
+      `Additional OAuth audiences: ${summary.oauthAudiences.join(", ") || "(none)"} ` +
+      `(${summary.sources.oauthAudiences})`,
+    );
+    console.log(`Effective OAuth audiences: ${summary.oauthEffectiveAudiences.join(", ")}`);
     console.log(`OAuth scopes: ${summary.oauthScopes.join(", ")} (${summary.sources.oauthScopes})`);
     console.log(
       `OAuth clock skew: ${summary.oauthClockSkewSeconds}s (${summary.sources.oauthClockSkewSeconds})`,
@@ -865,6 +878,7 @@ async function doctor(args: string[]) {
       const oauthConfig = {
         publicBaseUrl: effective.publicBaseUrl,
         issuerUrl: effective.oauthIssuerUrl,
+        audiences: effective.oauthAudiences,
         scopes: effective.oauthScopes,
         clockSkewSeconds: effective.oauthClockSkewSeconds,
       };
@@ -877,6 +891,11 @@ async function doctor(args: string[]) {
           name: "oauth-config",
           ok: true,
           detail: `${summary.publicBaseUrl} -> ${summary.oauthIssuerUrl}`,
+        });
+        checks.push({
+          name: "oauth-audiences",
+          ok: true,
+          detail: buildAudienceList(oauthConfig).join(", "),
         });
         try {
           const readiness = await probeOAuthReadiness(oauthConfig);
@@ -949,6 +968,9 @@ function getSnippetEnv(): Record<string, string> {
     env.AFFINE_MCP_AUTH_MODE = "oauth";
     if (effective.publicBaseUrl) env.AFFINE_MCP_PUBLIC_BASE_URL = effective.publicBaseUrl;
     if (effective.oauthIssuerUrl) env.AFFINE_OAUTH_ISSUER_URL = effective.oauthIssuerUrl;
+    if (effective.oauthAudiences.length > 0) {
+      env.AFFINE_OAUTH_AUDIENCES = effective.oauthAudiences.join(",");
+    }
     if (effective.oauthScopes.length > 0) env.AFFINE_OAUTH_SCOPES = effective.oauthScopes.join(" ");
   }
   return env;
