@@ -370,62 +370,6 @@ async function testFailureNeverFallsBack() {
   }
 }
 
-async function testFailureDiagnosticsAreUsefulAndRedacted() {
-  const email = "diagnostic-user@example.test";
-  const password = "diagnostic-password-secret";
-  const token = "diagnostic-token-secret";
-  const cookie = "affine_session=diagnostic-cookie-secret";
-  const networkError = new Error(
-    `connect ECONNREFUSED 172.18.0.5:3010 password=${password} ` +
-    `authorization=Bearer ${token} cookie=${cookie}`,
-  );
-  Object.assign(networkError, {
-    code: "ECONNREFUSED",
-    errno: -111,
-    syscall: "connect",
-    address: "172.18.0.5",
-    port: 3010,
-  });
-  const fetchError = new TypeError("fetch failed", { cause: networkError });
-  const session = new AuthSession({
-    baseUrl: "http://affine:3010",
-    email,
-    password,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Cookie: cookie,
-    },
-    login: async () => { throw fetchError; },
-  });
-
-  const originalConsoleError = console.error;
-  const logLines = [];
-  console.error = (...values) => { logLines.push(values.map(String).join(" ")); };
-  let rejection;
-  try {
-    await session.ready();
-  } catch (error) {
-    rejection = error;
-  } finally {
-    console.error = originalConsoleError;
-  }
-
-  assert(rejection instanceof Error, "diagnostic login should reject");
-  assertEqual(rejection.cause, fetchError, "wrapped login error preserves original cause");
-  const output = logLines.join("\n");
-  assert(output.includes("TypeError: fetch failed"), "top-level fetch error is logged");
-  assert(output.includes("cause:"), "error cause is logged");
-  assert(output.includes("code: ECONNREFUSED"), "network code is logged");
-  assert(output.includes("syscall: connect"), "network syscall is logged");
-  assert(output.includes("address: 172.18.0.5"), "network address is logged");
-  assert(output.includes("port: 3010"), "network port is logged");
-  assert(output.includes("testFailureDiagnosticsAreUsefulAndRedacted"), "stack is logged");
-  for (const secret of [email, password, token, cookie]) {
-    assert(!output.includes(secret), `diagnostic output redacts ${secret}`);
-  }
-  assert(output.includes("[REDACTED]"), "diagnostic output marks redactions");
-}
-
 async function testEnvironmentCredentialsOverrideSavedAuthentication() {
   const scenarios = [
     {
@@ -554,7 +498,6 @@ async function main() {
   await testSingleFlightPrimitive();
   await testExclusiveAuthState();
   await testFailureNeverFallsBack();
-  await testFailureDiagnosticsAreUsefulAndRedacted();
   await testEnvironmentCredentialsOverrideSavedAuthentication();
   await testConcurrentHttpSessionsAndDirectMultipart();
   console.log("Authentication session regression tests passed.");

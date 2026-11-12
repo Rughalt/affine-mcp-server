@@ -1,5 +1,4 @@
 import { loginWithPassword } from "./auth.js";
-import { formatErrorDiagnostics } from "./util/errorDiagnostics.js";
 
 export type AuthSnapshot =
   | { kind: "none" }
@@ -102,16 +101,7 @@ export class AuthSession {
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        const headerSecrets = Object.entries(this.headers || {})
-          .filter(([name]) =>
-            /(?:authorization|cookie|token|api[-_]?key|secret|password)/i.test(name))
-          .map(([, value]) => value);
-        const diagnostics = formatErrorDiagnostics(error, {
-          secrets: [email, password, ...headerSecrets],
-        });
-        console.error(
-          `[affine-mcp] Email/password authentication failed:\n${diagnostics}`,
-        );
+        console.error(`[affine-mcp] Email/password authentication failed: ${message}`);
         throw new Error(`Email/password authentication failed: ${message}`, { cause: error });
       });
 

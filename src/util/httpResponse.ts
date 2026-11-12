@@ -82,7 +82,7 @@ export async function fetchResponseBody<T extends ResponseLike>(
   } catch (error) {
     if (controller.signal.aborted) {
       const duration = timeoutMs % 1000 === 0 ? `${timeoutMs / 1000}s` : `${timeoutMs}ms`;
-      throw new Error(`${label} timed out after ${duration}`, { cause: error });
+      throw new Error(`${label} timed out after ${duration}`);
     }
     throw error;
   } finally {
