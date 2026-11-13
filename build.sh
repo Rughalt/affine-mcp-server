@@ -7,7 +7,7 @@ Usage: ./build.sh [options] [-- docker-build-options]
 
 Options:
   --compose-file FILE  Update an image entry in this Compose file after building.
-  --service NAME       Override automatic MCP service detection.
+  --service NAME       Update only this service instead of every detected MCP service.
   -h, --help           Show this help.
 
 Examples:
@@ -21,6 +21,7 @@ EOF
 invocation_dir=$(pwd)
 compose_file=
 compose_service=
+compose_services=
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -97,19 +98,20 @@ if [ -n "$compose_file" ]; then
     ' "$compose_file" | sort -u)
 
     detected_count=$(printf '%s\n' "$detected_services" | awk 'NF { count += 1 } END { print count + 0 }')
-    if [ "$detected_count" -eq 1 ]; then
-      compose_service=$detected_services
-      echo "Detected Compose service: ${compose_service}"
-    elif [ "$detected_count" -eq 0 ]; then
+    if [ "$detected_count" -eq 0 ]; then
       echo "Error: no service using an affine-mcp-server image was found in $compose_file" >&2
       echo "Specify it explicitly with --service NAME." >&2
       exit 2
+    elif [ "$detected_count" -eq 1 ]; then
+      compose_services=$detected_services
+      echo "Detected Compose service: ${compose_services}"
     else
-      echo "Error: multiple affine-mcp-server services were found in $compose_file:" >&2
-      printf '  %s\n' $detected_services >&2
-      echo "Specify one with --service NAME." >&2
-      exit 2
+      compose_services=$detected_services
+      echo "Detected Compose services:"
+      printf '  %s\n' $detected_services
     fi
+  else
+    compose_services=$compose_service
   fi
 fi
 
@@ -139,10 +141,16 @@ if [ -n "$compose_file" ]; then
   compose_tmp=$(mktemp "${compose_file}.tmp.XXXXXX")
   trap 'rm -f "$compose_tmp"' EXIT HUP INT TERM
 
-  if ! awk -v service="$compose_service" -v image="$image_name" '
+  if ! awk -v services="$compose_services" -v image="$image_name" '
     function indentation(line, match_at) {
       match_at = match(line, /[^ \t]/)
       return match_at ? match_at - 1 : length(line)
+    }
+    BEGIN {
+      service_count = split(services, service_names, "\n")
+      for (service_index = 1; service_index <= service_count; service_index += 1) {
+        wanted[service_names[service_index]] = 1
+      }
     }
     {
       content = $0
@@ -155,27 +163,33 @@ if [ -n "$compose_file" ]; then
       if (in_service && trimmed != "" && current_indent <= service_indent) {
         in_service = 0
       }
-      if (!in_service && trimmed == service ":") {
+      candidate = trimmed
+      sub(/:[ \t]*$/, "", candidate)
+      if (!in_service && (candidate in wanted) && trimmed ~ /:[ \t]*$/) {
+        current_service = candidate
         in_service = 1
         service_indent = current_indent
-        found_service = 1
+        found[current_service] = 1
       } else if (in_service && trimmed ~ /^image[ \t]*:/) {
         prefix = substr($0, 1, current_indent)
         print prefix "image: " image
-        replaced += 1
+        replaced[current_service] += 1
         next
       }
       print
     }
     END {
-      if (!found_service) {
-        print "Error: service not found in Compose file: " service > "/dev/stderr"
-        exit 3
+      failed = 0
+      for (service in wanted) {
+        if (!found[service]) {
+          print "Error: service not found in Compose file: " service > "/dev/stderr"
+          failed = 1
+        } else if (replaced[service] != 1) {
+          print "Error: expected exactly one image entry for service " service ", found " replaced[service] > "/dev/stderr"
+          failed = 1
+        }
       }
-      if (replaced != 1) {
-        print "Error: expected exactly one image entry for service " service ", found " replaced > "/dev/stderr"
-        exit 4
-      }
+      if (failed) exit 4
     }
   ' "$compose_file" > "$compose_tmp"; then
     exit 1
@@ -184,7 +198,8 @@ if [ -n "$compose_file" ]; then
   cp "$compose_tmp" "$compose_file"
   rm -f "$compose_tmp"
   trap - EXIT HUP INT TERM
-  echo "Updated Compose service ${compose_service} in ${compose_file}."
+  echo "Updated Compose service(s) in ${compose_file}:"
+  printf '  %s\n' $compose_services
 fi
 
 cat <<EOF
@@ -208,11 +223,12 @@ The value above should equal:
 EOF
 
 if [ -n "$compose_file" ]; then
+  compose_service_args=$(printf '%s\n' "$compose_services" | awk 'NF { printf "%s\"%s\"", separator, $0; separator = " " }')
   cat <<EOF
 
-Recreate the updated service:
+Recreate the updated service(s):
 
-    docker compose -f "${compose_file}" up -d --no-deps --force-recreate "${compose_service}"
+    docker compose -f "${compose_file}" up -d --no-deps --force-recreate ${compose_service_args}
 EOF
 else
   cat <<'EOF'
